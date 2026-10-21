@@ -161,7 +161,7 @@ export default function DaftarHadir({ onKembali }) {
       }
 
       const response = await fetch(
-        'http://127.0.0.1:8000/api/daftar-hadir/pdf',
+        '/api/daftar-hadir/pdf',
         {
           method: 'POST',
           headers: {
