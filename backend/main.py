@@ -395,3 +395,138 @@ def buat_pdf(data: AttendanceRequest):
         },
         status_code=200,
     )
+
+
+# --- Generator Nomor Surat (bukan pembuat isi surat) ---
+import sqlite3
+from pathlib import Path
+from datetime import datetime
+import re
+
+DB_PATH = Path(__file__).resolve().parent / "nomor_surat.db"
+ROMAWI = {1:"I",2:"II",3:"III",4:"IV",5:"V",6:"VI",7:"VII",8:"VIII",9:"IX",10:"X",11:"XI",12:"XII"}
+PERUSAHAAN_SURAT = {"ASK":"Armeni Sejahtera Kreasi", "ACP":"Arka Creative Production", "PKB":"Kreasi Pemuda Perkasa", "KPP":"Pesona Kreasi Bangsa"}
+JENIS_SURAT = [
+    ("SPD", "Surat Perjalanan Dinas"), ("SKK", "Surat Keterangan Kerja"),
+    ("SKP", "Surat Keterangan Penghasilan"), ("SBA", "Surat Berita Acara"),
+    ("STB", "Surat Terima Barang"), ("SPK", "Surat Penawaran Kualifikasi"),
+    ("SPH", "Surat Penawaran Harga"), ("SPP", "Surat Permohonan Pembayaran"),
+    ("KWT", "Kuitansi"), ("INV", "Invoice"), ("UM", "Umum"), ("F", "Faktur"),
+    ("SP", "Surat Pernyataan"), ("DKH", "Daftar Kuantitas dan Harga"),
+    ("SPL", "Surat Pernyataan Lainnya"), ("ST", "Surat Spesifikasi Teknis"),
+    ("JP", "Jadwal Pekerjaan"), ("SK", "Surat Kuasa"), ("SKS", "Surat Klarifikasi SP2DK"),
+]
+
+def db_surat():
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE IF NOT EXISTS nomor_surat (id INTEGER PRIMARY KEY AUTOINCREMENT, perusahaan TEXT NOT NULL, tanggal TEXT NOT NULL, kode_jenis TEXT NOT NULL, nama_jenis TEXT NOT NULL, kl TEXT NOT NULL DEFAULT '', kode_tambahan TEXT NOT NULL DEFAULT '', divisi TEXT NOT NULL DEFAULT '', nomor TEXT NOT NULL, dibuat TEXT NOT NULL)")
+    conn.commit()
+    return conn
+
+def nomor_format(perusahaan, tanggal, urut, kode_jenis, kl, kode_tambahan="1", divisi=""):
+    """Format nomor mengikuti susunan formula tiap sheet; slot tanggal dibuat otomatis."""
+    d = datetime.strptime(tanggal, "%Y-%m-%d").date()
+    bulan = ROMAWI[d.month]
+    urut3 = f"{urut:03d}"
+    kl = kl.strip().upper()
+    slot = str(kode_tambahan or "1").strip().upper()
+    if perusahaan == "ASK":
+        # ASK: nomor/K-L-kode jenis.slot/ASK/bulan.tahun
+        return f"{urut3}/{kl}-{kode_jenis}.{slot}/ASK/{bulan}.{d.year}"
+    if perusahaan == "ACP":
+        # ACP: nomor.ACP.slot/kode jenis-K/L/bulan.tahun
+        return f"{urut3}.ACP.{slot}/{kode_jenis}-{kl}/{bulan}.{d.year}"
+    if perusahaan == "PKB":
+        # PKB: nomor.bulan-slot.tahun/K-L.PKB/kode jenis
+        return f"{urut3}.{bulan}-{slot}.{d.year}/{kl}.PKB/{kode_jenis}"
+    if perusahaan == "KPP":
+        # KPP: nomor.tanggal.KPP-kode jenis.slot/bulan.K-L/tahun
+        return f"{urut3}.{d.day}.KPP-{kode_jenis}.{slot}/{bulan}.{kl}/{d.year}"
+    raise HTTPException(status_code=400, detail="Perusahaan tidak dikenali")
+
+def serialisasi_surat(row): return {k: row[k] for k in row.keys()}
+
+def hitung_ulang_nomor(conn, perusahaan, tahun):
+    rows = conn.execute("SELECT * FROM nomor_surat WHERE perusahaan=? AND substr(tanggal,1,4)=? ORDER BY tanggal,id", (perusahaan, tahun)).fetchall()
+    tanggal_urut = {}
+    tanggal_slot = {}
+    for row in rows:
+        if row["tanggal"] not in tanggal_urut:
+            tanggal_urut[row["tanggal"]] = len(tanggal_urut) + 1
+        tanggal_slot[row["tanggal"]] = tanggal_slot.get(row["tanggal"], 0) + 1
+        slot_no = tanggal_slot[row["tanggal"]]
+        slot = chr(64 + slot_no) if perusahaan in ("ACP", "PKB") and slot_no <= 26 else str(slot_no)
+        nomor = nomor_format(row["perusahaan"], row["tanggal"], tanggal_urut[row["tanggal"]], row["kode_jenis"], row["kl"], slot)
+        conn.execute("UPDATE nomor_surat SET kode_tambahan=?, nomor=? WHERE id=?", (slot, nomor, row["id"]))
+
+@app.get("/api/nomor-surat/options")
+def opsi_nomor_surat():
+    return {"perusahaan":[{"kode":k,"nama":v} for k,v in PERUSAHAAN_SURAT.items()], "jenis":[{"kode":k,"nama":v} for k,v in JENIS_SURAT]}
+
+@app.get("/api/nomor-surat")
+def riwayat_nomor_surat(q: str = "", perusahaan: str = ""):
+    conn = db_surat()
+    try:
+        sql = "SELECT * FROM nomor_surat WHERE 1=1"; params = []
+        if perusahaan: sql += " AND perusahaan=?"; params.append(perusahaan)
+        if q.strip():
+            sql += " AND (nomor LIKE ? OR kl LIKE ? OR kode_jenis LIKE ? OR nama_jenis LIKE ? OR kode_tambahan LIKE ?)"
+            params.extend([f"%{q.strip()}%"]*5)
+        sql += " ORDER BY tanggal ASC, perusahaan ASC, id ASC"
+        return [serialisasi_surat(r) for r in conn.execute(sql,params).fetchall()]
+    finally: conn.close()
+
+@app.post("/api/nomor-surat", status_code=201)
+def buat_nomor_surat(data: dict):
+    perusahaan = str(data.get("perusahaan", "")).upper()
+    tanggal = str(data.get("tanggal", ""))
+    kode_jenis = str(data.get("kode_jenis", "")).strip().upper()
+    kl = str(data.get("kl", "")).strip()
+    if perusahaan not in PERUSAHAAN_SURAT:
+        raise HTTPException(400, "Pilih perusahaan yang valid")
+    try:
+        datetime.strptime(tanggal, "%Y-%m-%d")
+    except ValueError:
+        raise HTTPException(400, "Tanggal tidak valid")
+    jenis = dict(JENIS_SURAT).get(kode_jenis)
+    if not jenis:
+        raise HTTPException(400, "Pilih jenis surat")
+    if not kl:
+        raise HTTPException(400, "Kode K/L atau instansi wajib diisi")
+    conn = db_surat()
+    try:
+        # Slot tambahan otomatis berdasarkan jumlah surat dari PT yang sama pada tanggal itu.
+        jumlah = conn.execute(
+            "SELECT COUNT(*) FROM nomor_surat WHERE perusahaan=? AND tanggal=?",
+            (perusahaan, tanggal),
+        ).fetchone()[0]
+        slot_no = jumlah + 1
+        # ASK memakai angka pada slot; ACP/PKB memakai A, B, C ...; KPP angka.
+        slot = chr(64 + slot_no) if perusahaan in ("ACP", "PKB") and slot_no <= 26 else str(slot_no)
+        nomor_utama = conn.execute(
+            "SELECT COUNT(DISTINCT tanggal) FROM nomor_surat WHERE perusahaan=? AND substr(tanggal,1,4)=? AND tanggal<?",
+            (perusahaan, tanggal[:4], tanggal),
+        ).fetchone()[0] + 1
+        nomor = nomor_format(perusahaan, tanggal, nomor_utama, kode_jenis, kl, slot)
+        cur = conn.execute(
+            "INSERT INTO nomor_surat(perusahaan,tanggal,kode_jenis,nama_jenis,kl,kode_tambahan,divisi,nomor,dibuat) VALUES(?,?,?,?,?,?,?,?,?)",
+            (perusahaan, tanggal, kode_jenis, jenis, kl, slot, "", nomor, datetime.now().isoformat(timespec="seconds")),
+        )
+        hitung_ulang_nomor(conn, perusahaan, tanggal[:4])
+        conn.commit()
+        return serialisasi_surat(conn.execute("SELECT * FROM nomor_surat WHERE id=?", (cur.lastrowid,)).fetchone())
+    finally:
+        conn.close()
+
+@app.delete("/api/nomor-surat/{surat_id}")
+def hapus_nomor_surat(surat_id: int):
+    conn = db_surat()
+    try:
+        row = conn.execute("SELECT perusahaan,tanggal FROM nomor_surat WHERE id=?",(surat_id,)).fetchone()
+        if row is None: raise HTTPException(404, "Nomor surat tidak ditemukan")
+        conn.execute("DELETE FROM nomor_surat WHERE id=?",(surat_id,))
+        hitung_ulang_nomor(conn, row["perusahaan"], row["tanggal"][:4])
+        conn.commit()
+        return {"ok":True}
+    finally: conn.close()
