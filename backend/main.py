@@ -2,6 +2,7 @@
 from pathlib import Path
 from io import BytesIO
 from datetime import date
+import os
 
 from fastapi import FastAPI, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
@@ -34,14 +35,13 @@ app = FastAPI(
     version="0.1.0",
 )
 
+# Isi ALLOWED_ORIGINS di server backend dengan domain Vercel, dipisahkan koma.
+# Contoh: https://armeni-tools-kit.vercel.app,https://armeni-tools-kit-git-main.vercel.app
+_default_origins = "http://localhost:5173,http://localhost:5174,http://127.0.0.1:5173,http://127.0.0.1:5174"
+_allowed_origins = [x.strip().rstrip("/") for x in os.getenv("ALLOWED_ORIGINS", _default_origins).split(",") if x.strip()]
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[
-        "http://localhost:5173",
-        "http://localhost:5174",
-        "http://127.0.0.1:5173",
-        "http://127.0.0.1:5174",
-    ],
+    allow_origins=_allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],
@@ -400,10 +400,12 @@ def buat_pdf(data: AttendanceRequest):
 # --- Generator Nomor Surat (bukan pembuat isi surat) ---
 import sqlite3
 from pathlib import Path
-from datetime import datetime
+from datetime import date
+import ostime
 import re
 
-DB_PATH = Path(__file__).resolve().parent / "nomor_surat.db"
+DB_PATH = Path(os.getenv("DATABASE_PATH", str(Path(__file__).resolve().parent / "nomor_surat.db")))
+DB_PATH.parent.mkdir(parents=True, exist_ok=True)
 ROMAWI = {1:"I",2:"II",3:"III",4:"IV",5:"V",6:"VI",7:"VII",8:"VIII",9:"IX",10:"X",11:"XI",12:"XII"}
 PERUSAHAAN_SURAT = {"ASK":"Armeni Sejahtera Kreasi", "ACP":"Arka Creative Production", "PKB":"Kreasi Pemuda Perkasa", "KPP":"Pesona Kreasi Bangsa"}
 JENIS_SURAT = [

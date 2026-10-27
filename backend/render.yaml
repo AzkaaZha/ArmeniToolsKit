@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: armeni-toolskit-api
+    runtime: python
+    plan: starter
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn main:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: PYTHON_VERSION
+        value: 3.12.7
+      - key: DATABASE_PATH
+        value: /var/data/nomor_surat.db
+      - key: ALLOWED_ORIGINS
+        sync: false
+    disk:
+      name: armeni-data
+      mountPath: /var/data
+      sizeGB: 1

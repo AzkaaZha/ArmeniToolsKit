@@ -4,6 +4,7 @@ import {
   Trash2, Copy, X, Save, CalendarDays, ClipboardList
 } from 'lucide-react'
 import * as XLSX from 'xlsx'
+import { apiUrl } from './api'
 
 const STORAGE_KEY = 'armeni_tools_daftar_hadir_v1'
 const perusahaanList = [
@@ -163,7 +164,7 @@ export default function DaftarHadir({ onKembali }) {
     setLoading(true)
     setError('')
     try {
-      const response = await fetch('http://127.0.0.1:8000/api/daftar-hadir/pdf', {
+      const response = await fetch(apiUrl('/api/daftar-hadir/pdf'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({
