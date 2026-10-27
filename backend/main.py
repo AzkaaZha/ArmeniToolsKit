@@ -1,7 +1,7 @@
 
 from pathlib import Path
 from io import BytesIO
-from datetime import date
+from datetime import date, datetime
 import os
 
 from fastapi import FastAPI, HTTPException
@@ -399,13 +399,75 @@ def buat_pdf(data: AttendanceRequest):
 
 # --- Generator Nomor Surat (bukan pembuat isi surat) ---
 import sqlite3
-from pathlib import Path
-from datetime import date
-import ostime
 import re
 
+DATABASE_URL = os.getenv("DATABASE_URL", "").strip()
 DB_PATH = Path(os.getenv("DATABASE_PATH", str(Path(__file__).resolve().parent / "nomor_surat.db")))
 DB_PATH.parent.mkdir(parents=True, exist_ok=True)
+
+class _CompatRow(dict):
+    """Mendukung akses row dengan nama kolom maupun indeks seperti SQLite."""
+    def __getitem__(self, key):
+        if isinstance(key, int):
+            return list(self.values())[key]
+        return super().__getitem__(key)
+
+class _PgCursor:
+    def __init__(self, cursor, lastrowid=None):
+        self._cursor = cursor
+        self.lastrowid = lastrowid
+    def fetchone(self):
+        row = self._cursor.fetchone()
+        return _CompatRow(row) if row is not None else None
+    def fetchall(self):
+        return [_CompatRow(row) for row in self._cursor.fetchall()]
+
+class _PgConnection:
+    def __init__(self, conn):
+        self._conn = conn
+    def execute(self, sql, params=()):
+        # SQL di aplikasi memakai placeholder SQLite '?'; psycopg memakai '%s'.
+        pg_sql = sql.replace("?", "%s")
+        is_insert = pg_sql.lstrip().upper().startswith("INSERT INTO NOMOR_SURAT")
+        if is_insert and "RETURNING" not in pg_sql.upper():
+            pg_sql += " RETURNING id"
+        cur = self._conn.execute(pg_sql, params)
+        lastrowid = None
+        if is_insert:
+            row = cur.fetchone()
+            if row:
+                lastrowid = row[0] if not isinstance(row, dict) else row.get("id")
+        return _PgCursor(cur, lastrowid)
+    def commit(self):
+        self._conn.commit()
+    def close(self):
+        self._conn.close()
+
+def db_surat():
+    if DATABASE_URL:
+        import psycopg
+        from psycopg.rows import dict_row
+        raw = psycopg.connect(DATABASE_URL, row_factory=dict_row)
+        conn = _PgConnection(raw)
+        conn.execute("""CREATE TABLE IF NOT EXISTS nomor_surat (
+            id BIGSERIAL PRIMARY KEY,
+            perusahaan TEXT NOT NULL,
+            tanggal TEXT NOT NULL,
+            kode_jenis TEXT NOT NULL,
+            nama_jenis TEXT NOT NULL,
+            kl TEXT NOT NULL DEFAULT '',
+            kode_tambahan TEXT NOT NULL DEFAULT '',
+            divisi TEXT NOT NULL DEFAULT '',
+            nomor TEXT NOT NULL,
+            dibuat TEXT NOT NULL
+        )""")
+        conn.commit()
+        return conn
+    conn = sqlite3.connect(DB_PATH)
+    conn.row_factory = sqlite3.Row
+    conn.execute("CREATE TABLE IF NOT EXISTS nomor_surat (id INTEGER PRIMARY KEY AUTOINCREMENT, perusahaan TEXT NOT NULL, tanggal TEXT NOT NULL, kode_jenis TEXT NOT NULL, nama_jenis TEXT NOT NULL, kl TEXT NOT NULL DEFAULT '', kode_tambahan TEXT NOT NULL DEFAULT '', divisi TEXT NOT NULL DEFAULT '', nomor TEXT NOT NULL, dibuat TEXT NOT NULL)")
+    conn.commit()
+    return conn
 ROMAWI = {1:"I",2:"II",3:"III",4:"IV",5:"V",6:"VI",7:"VII",8:"VIII",9:"IX",10:"X",11:"XI",12:"XII"}
 PERUSAHAAN_SURAT = {"ASK":"Armeni Sejahtera Kreasi", "ACP":"Arka Creative Production", "PKB":"Kreasi Pemuda Perkasa", "KPP":"Pesona Kreasi Bangsa"}
 JENIS_SURAT = [
